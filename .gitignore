@@ -32,3 +32,4 @@ include
 *.exe
 *.out
 *.app
+testParser
