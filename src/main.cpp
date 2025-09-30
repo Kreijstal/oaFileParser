@@ -119,6 +119,14 @@ protected:
 
         cout << endl;
     };
+    virtual void onParsedInstanceTable(unsigned long numInstances, unsigned long instanceIds[], unsigned long masterIds[]) {
+        cout << "Instance Table (0x0b): " << endl;
+        cout << "\tNumber of instances: " << numInstances << endl;
+        for(unsigned long i = 0; i < numInstances; ++i) {
+            cout << "\t\tInstance ID: 0x" << setfill('0') << setw(8) << hex << instanceIds[i] 
+                 << " -> Master ID: 0x" << setfill('0') << setw(8) << hex << masterIds[i] << endl;
+        }
+    };
     virtual void onParsedCreateTime(unsigned long createTime) {
         cout << "Database Create Time: " << endl;
         struct tm *timeInfo;

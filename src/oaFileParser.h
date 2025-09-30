@@ -80,6 +80,7 @@ namespace oafp
                                          unsigned int idCount, unsigned long tblIds[],
                                          unsigned int tblTypes[], unsigned int tblCount) = 0;
         virtual void onParsedStringTable(tableIndex table, const char *buffer) = 0;
+        virtual void onParsedInstanceTable(unsigned long numInstances, unsigned long instanceIds[], unsigned long masterIds[]) = 0;
         virtual void onParsedCreateTime(unsigned long createTime) = 0;
         virtual void onParsedDMandBuildName(unsigned short dataModelRev,
                                             const char *buildName) = 0;
@@ -102,6 +103,7 @@ namespace oafp
         void read0x07(FILE *file, unsigned long pos, unsigned long tblSize);
         void read0x0a(FILE *file, unsigned long pos, unsigned long tblSize);
         void read0x0b(FILE *file, unsigned long pos, unsigned long tblSize);
+        void read0x0c(FILE *file, unsigned long pos, unsigned long tblSize);
         void read0x19(FILE *file, unsigned long pos, unsigned long tblSize);
         void read0x1c(FILE *file, unsigned long pos, unsigned long tblSize);
         void read0x1d(FILE *file, unsigned long pos, unsigned long tblSize);

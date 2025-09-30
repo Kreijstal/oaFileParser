@@ -105,6 +105,201 @@ namespace oafp
         onParsedStringTable(table, buffer);
     }
 
+    void oaFileParser::read0x0b(FILE *file, unsigned long pos,
+                                unsigned long tblSize)
+    {
+        fseek(file, pos, SEEK_SET);
+        
+        // Read table header
+        tableIndex table;
+        unsigned int in = 0;
+        in = fread(&table, sizeof(table), 1, file);
+        
+        printf("Instance Table 0x0b at 0x%lx: pos=0x%lx size=%lu used=%u deleted=%u first=%u\n", 
+               pos, pos, tblSize, table.used, table.deleted, table.first);
+        
+        // Calculate data section
+        unsigned long dataStart = pos + sizeof(table);
+        unsigned long dataSize = tblSize - sizeof(table);
+        
+        // Try 8-byte records (two 4-byte IDs: instance ID -> master ID)
+        if (dataSize % 8 == 0) {
+            unsigned long numRecords = dataSize / 8;
+            printf("Trying 8-byte records: %lu records\n", numRecords);
+            
+            unsigned long *instanceIds = new unsigned long[numRecords];
+            unsigned long *masterIds = new unsigned long[numRecords];
+            
+            fseek(file, dataStart, SEEK_SET);
+            for(unsigned long i = 0; i < numRecords; ++i) {
+                in = fread(&instanceIds[i], sizeof(unsigned long), 1, file);
+                in = fread(&masterIds[i], sizeof(unsigned long), 1, file);
+                printf("  Record %lu: Instance ID 0x%08lx -> Master ID 0x%08lx\n", i, instanceIds[i], masterIds[i]);
+            }
+            
+            // Call the virtual method with parsed data
+            onParsedInstanceTable(numRecords, instanceIds, masterIds);
+            
+            delete[] instanceIds;
+            delete[] masterIds;
+        } else {
+            printf("Data size %lu is not divisible by 8, cannot parse as 8-byte records\n", dataSize);
+        }
+        
+        // Also do ASCII extraction as fallback for debugging
+        fseek(file, pos, SEEK_SET);
+        char buffer[tblSize];
+        in = fread(&buffer, sizeof(buffer), 1, file);
+        
+        printf("ASCII extraction:\n");
+        unsigned long i = 0;
+        unsigned long runStart = 0;
+        bool inRun = false;
+        const int MIN_RUN = 3;
+        printf("\tStrings: ");
+        while(i < (unsigned long)tblSize) {
+            unsigned char c = (unsigned char)buffer[i];
+            if(c >= 32 && c < 127) {
+                if(!inRun) { runStart = i; inRun = true; }
+            } else {
+                if(inRun) {
+                    unsigned long runLen = i - runStart;
+                    if((int)runLen >= MIN_RUN) {
+                        for(unsigned long k = runStart; k < i; ++k) putchar(buffer[k]);
+                        putchar('|');
+                    }
+                    inRun = false;
+                }
+            }
+            ++i;
+        }
+        if(inRun) {
+            unsigned long runLen = i - runStart;
+            if((int)runLen >= MIN_RUN) {
+                for(unsigned long k = runStart; k < i; ++k) putchar(buffer[k]);
+                putchar('|');
+            }
+        }
+        putchar('\n');
+    }
+ 
+void oaFileParser::read0x0c(FILE *file, unsigned long pos,
+                            unsigned long tblSize)
+{
+    fseek(file, pos, SEEK_SET);
+    tableIndex table;
+    unsigned int in = 0;
+    in = fread(&table, sizeof(table), 1, file);
+
+    printf("Table 0x0c (deterministic extractor): pos=0x%lx size=%lu used=%u deleted=%u first=%u\n",
+           pos, tblSize, table.used, table.deleted, table.first);
+
+    unsigned long dataStart = pos + sizeof(table);
+    unsigned long dataSize = (tblSize > sizeof(table)) ? (tblSize - sizeof(table)) : 0;
+
+    if (dataSize == 0) {
+        printf("Table 0x0c has no data section\n");
+        return;
+    }
+
+    unsigned char *buffer = new unsigned char[dataSize];
+    fseek(file, dataStart, SEEK_SET);
+    in = fread(buffer, 1, dataSize, file);
+
+    printf("Data size: %lu\n", dataSize);
+
+    const unsigned short target16 = 222; // exact string-index for "M0"
+    const unsigned char tlo = (unsigned char)(target16 & 0xff);
+    const unsigned char thi = (unsigned char)((target16 >> 8) & 0xff);
+
+    // Open deterministic JSON output file (overwrites if exists).
+    FILE *out = fopen("aaic/m0_properties_M0.json", "w");
+    if (out == NULL) {
+        printf("Warning: could not open aaic/m0_properties_M0.json for writing\n");
+    } else {
+        fprintf(out, "[\n");
+    }
+
+    bool firstRecord = true;
+
+    // Helper to emit a JSON record for a found match.
+    auto emit_record = [&](unsigned long matchTableOffset, bool isFourByteMatch){
+        if (out == NULL) return;
+        if (!firstRecord) fprintf(out, ",\n");
+        fprintf(out, "  {\n");
+        fprintf(out, "    \"file_offset\": \"%#lx\",\n", dataStart + matchTableOffset);
+        fprintf(out, "    \"table_offset\": \"%#lx\",\n", matchTableOffset);
+        fprintf(out, "    \"match_width_bytes\": %d,\n", isFourByteMatch ? 4 : 2);
+
+        // Two-byte LE indices sequence (up to 32 entries) starting at match
+        fprintf(out, "    \"two_byte_indices\": [");
+        unsigned long seqMax2 = (matchTableOffset + 2*32 <= dataSize) ? (matchTableOffset + 2*32) : dataSize;
+        bool first = true;
+        for (unsigned long p = matchTableOffset; p + 1 < seqMax2; p += 2) {
+            unsigned short v = (unsigned short)(buffer[p] | (buffer[p+1] << 8));
+            if (!first) fprintf(out, ", ");
+            fprintf(out, "%u", (unsigned int)v);
+            first = false;
+        }
+        fprintf(out, "],\n");
+
+        // Four-byte LE values sequence (up to 16 entries) starting at match
+        fprintf(out, "    \"four_byte_values\": [");
+        unsigned long seqMax4 = (matchTableOffset + 4*16 <= dataSize) ? (matchTableOffset + 4*16) : dataSize;
+        first = true;
+        for (unsigned long p = matchTableOffset; p + 3 < seqMax4; p += 4) {
+            unsigned long v = 0;
+            memcpy(&v, &buffer[p], 4);
+            if (!first) fprintf(out, ", ");
+            fprintf(out, "%lu", v);
+            first = false;
+        }
+        fprintf(out, "]\n");
+
+        fprintf(out, "  }");
+        firstRecord = false;
+    };
+
+    // Scan for exact 2-byte little-endian occurrences.
+    for (unsigned long i = 0; i + 1 < dataSize; ++i) {
+        if (buffer[i] == tlo && buffer[i+1] == thi) {
+            unsigned long abs = dataStart + i;
+            printf("Found exact 2-byte match for index %u at file_offset=0x%lx (table offset 0x%lx)\n",
+                   (unsigned int)target16, abs, i);
+
+            // Emit deterministic record using only explicit bytes
+            emit_record(i, false);
+        }
+    }
+
+    // Scan for exact 4-byte little-endian occurrences (zero-extended)
+    unsigned char t32[4] = { tlo, thi, 0x00, 0x00 };
+    for (unsigned long i = 0; i + 3 < dataSize; ++i) {
+        if (buffer[i] == t32[0] && buffer[i+1] == t32[1] && buffer[i+2] == t32[2] && buffer[i+3] == t32[3]) {
+            unsigned long abs = dataStart + i;
+            printf("Found exact 4-byte zero-extended match for index %u at file_offset=0x%lx (table offset 0x%lx)\n",
+                   (unsigned int)target16, abs, i);
+
+            // Emit deterministic record using only explicit bytes
+            emit_record(i, true);
+        }
+    }
+
+    if (out != NULL) {
+        fprintf(out, "\n]\n");
+        fclose(out);
+        printf("Deterministic extraction written to aaic/m0_properties_M0.json\n");
+    }
+
+    delete[] buffer;
+}
+/*
+ * Strict parser for table 0x0c: locate exact little-endian occurrences of
+ * a 16-bit string-table index (222 decimal) and print raw records without
+ * heuristics. This emits only exact numeric indices and raw hex/ASCII for
+ * manual inspection (no attempt to guess key/value pairs).
+ */
+
     void oaFileParser::read0x19(FILE *file, unsigned long pos,
                                 unsigned long tblSize)
     {
@@ -235,9 +430,10 @@ namespace oafp
                     //Non-Index Items; Offset start from 0
                     case 0x0a: read0x0a(file, offsets[i], sizes[i]);
                         break; //String table
-
-                    default:
-                        break;
+                    case 0x0b: read0x0b(file, offsets[i], sizes[i]);
+                        break; //Instance table
+                    case 0x0101: read0x0b(file, offsets[i], sizes[i]);
+                        break; //Unknown table, try same parsing as instance table
                 }
             }
 
